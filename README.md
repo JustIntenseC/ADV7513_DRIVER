@@ -67,4 +67,5 @@ MIT
 
 ---
 ## **Автор**
-Arthur Fayzullin
+Arthur Fayzullin. По всем вопросам писать на: artureika2004@gmail.com
+
