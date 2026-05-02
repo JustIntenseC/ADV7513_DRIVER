@@ -18,7 +18,7 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
-
+#include <stdio.h>
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 
@@ -89,6 +89,17 @@
 #define AUTO_CKSUM_ADDR    0x4A
 #define AUTO_CKSUM_VAL     0x80   // Auto Checksum Enable
 
+
+// --- Определения для ADV7513 ---
+#define ADV7513_MAIN_ADDR        0x72  // Основной I2C адрес ADV7513
+#define ADV7513_EDID_MEM_ADDR    0x7E  // Адрес внутренней памяти EDID (по умолчанию)
+#define EDID_BLOCK_SIZE          256   // Размер одного сегмента в байтах
+
+// --- Регистры ADV7513 (Main Map) ---
+#define REG_EDID_SEGMENT         0xC4  // Регистр выбора сегмента EDID
+#define REG_EDID_RDY_FLAG        0x96  // Регистр флага готовности EDID
+#define REG_EDID_MEM_ADDR        0x43  // Регистр адреса памяти EDID
+
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -110,6 +121,9 @@ void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_I2C1_Init(void);
 static void MX_USART1_UART_Init(void);
+void ADV7513_Full_Diagnostics(void);
+void ADV7513_Read_Interrupts(void);
+HAL_StatusTypeDef ADV7513_ReadEDIDSegment(I2C_HandleTypeDef *hi2c_dev, uint8_t segment, uint8_t *edid_buffer, uint32_t timeout_ms);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -151,28 +165,50 @@ int main(void)
   MX_I2C1_Init();
   MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
-  // uint8_t read_val = 0;
-  // HAL_StatusTypeDef status = HAL_I2C_Mem_Read(&hi2c1, ADV7513_ADDR, 0x41, I2C_MEMADD_SIZE_8BIT, &read_val, 1, HAL_MAX_DELAY);
+  uint8_t edid_data[EDID_BLOCK_SIZE];
   ADV7513_PowerInit();
   ADV7513_HDMI_Init();
-  // Проверка PLL lock (самый важный индикатор)
-    uint8_t pll_status = 0;
-    HAL_I2C_Mem_Read(&hi2c1, ADV7513_ADDR, 0x9E, I2C_MEMADD_SIZE_8BIT, &pll_status, 1, HAL_MAX_DELAY);
-    if (pll_status & 0x10) {
-        HAL_UART_Transmit(&huart1, (uint8_t*)"PLL LOCKED (40 MHz TMDS)!\n", 27, HAL_MAX_DELAY);
-    } else {
-        HAL_UART_Transmit(&huart1, (uint8_t*)"PLL NOT LOCKED!\n", 16, HAL_MAX_DELAY);
-    }
+
+  // ADV7513_WriteVerifyReg(0xD6, 0x80, "HPD ON");
+  // ADV7513_WriteVerifyReg(0x41, 0x00, "POWER TX ON");
+  // uint8_t read_val = 0;
+  // HAL_StatusTypeDef status = HAL_I2C_Mem_Read(&hi2c1, ADV7513_ADDR, 0x3E, I2C_MEMADD_SIZE_8BIT, &read_val, 1, HAL_MAX_DELAY);
+  // // if(read_val== 0){
+  // //   Error_Handler();
+  // // }
+
+  // status = HAL_I2C_Mem_Read(&hi2c1, ADV7513_ADDR, 0x17, I2C_MEMADD_SIZE_8BIT, &read_val, 1, HAL_MAX_DELAY);
+  // if(read_val==0){
+  //   Error_Handler();
+  // }
+
+
+  ADV7513_ReadEDIDSegment(&hi2c1,0, edid_data, HAL_MAX_DELAY);
+
+
+  ADV7513_Full_Diagnostics();
   /* USER CODE END 2 */
 
   /* Infinite loop */
-  /* USER CODE BEGIN WHILE */
     while (1)
   {
+     /* USER CODE BEGIN WHILE */
+     
+      // ADV7513_Read_Interrupts();
+      __WFI();
+
+
+
     /* USER CODE END WHILE */
 
-    /* USER CODE BEGIN 3 */
+    
+
+
   }
+
+  /* USER CODE BEGIN 3 */
+
+
   /* USER CODE END 3 */
 }
 
@@ -332,156 +368,200 @@ static void MX_GPIO_Init(void)
   /* USER CODE END MX_GPIO_Init_2 */
 }
 
-/* USER CODE BEGIN 4 */
 
-
-// void ADV7513_PowerInit(void){
-
-//   typedef struct{
-//     uint8_t addr;
-//     uint8_t val;
-//     const char *name;
-//   } reg_adv7513_t;
-
-//   reg_adv7513_t regs[] = {
-//     // {0xD6, 0b00000000, "HDP_HIGH"},
-//     // {0x41, 0b00010000, "POWER UP"},
-
+void ADV7513_Read_Interrupts(void)
+{
+    uint8_t interruptReg = 0;
     
-//     {PLL_0_ADDR, PLL_0_VAL, "PLL0"},
-//     {PLL_1_ADDR, PLL_1_VAL, "PLL_1"},
-//     {PLL_2_ADDR, PLL_2_VAL, "PLL_2"},
-//     {PLL_3_ADDR, PLL_3_VAL, "PLL_3"},
-//     {PLL_4_ADDR, PLL_4_VAL, "PLL_4"},
-//     {PLL_5_ADDR, PLL_5_VAL, "PLL_5"},
-//     {PLL_6_ADDR, PLL_6_VAL, "PLL_6"},
-//     {PLL_7_ADDR, PLL_7_VAL, "PLL_7"},
-//     {0x3B, 0x54, "PR_MANUAL_X4"},
-//   };
+    if(HAL_I2C_Mem_Read(&hi2c1, ADV7513_ADDR, 0x96, I2C_MEMADD_SIZE_8BIT, &interruptReg, 1, HAL_MAX_DELAY) != HAL_OK)
+    {
+        Error_Handler();
+    }
+    
+    // Проверка бита VSYNC (бит 5)
+    if((interruptReg >> 5) & 1)   // исправлено: добавлены скобки и &1
+    {
+        ADV7513_WriteVerifyReg(0x96, 0x00, "CLEAR_VSYNC_INT");
+    }
+}
 
-//   for(int i = 0; i<(sizeof(regs)/sizeof(regs[0]));i++){
-//     ADV7513_WriteVerifyReg(regs[i].addr, regs[i].val, regs[i].name);
-//   }
 
-//   HAL_UART_Transmit(&huart1, (uint8_t*)"All PLL Registers OK\n", 22, HAL_MAX_DELAY);
-//   HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_8);
-//   HAL_Delay(100);
-//   HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_8);
-//   HAL_Delay(100);
-//   HAL_GPIO_TogglePin(GPIOA,GPIO_PIN_8);
 
-// }
+/* USER CODE BEGIN 4 */
+void ADV7513_Full_Diagnostics(void)
+{
+    uint8_t reg;
+    char buf[80];
+
+    HAL_UART_Transmit(&huart1, (uint8_t*)"\n=== ADV7513 FULL DIAGNOSTICS ===\n", 34, HAL_MAX_DELAY);
+
+    // 1. Power status
+    HAL_I2C_Mem_Read(&hi2c1, ADV7513_ADDR, 0x41, I2C_MEMADD_SIZE_8BIT, &reg, 1, HAL_MAX_DELAY);
+    sprintf(buf, "0x41 Power     : 0x%02X  (Power-Up = %d)\n", reg, (reg & 0x10) ? 1 : 0);
+    HAL_UART_Transmit(&huart1, (uint8_t*)buf, strlen(buf), HAL_MAX_DELAY);
+
+    // 2. HPD и RxSense (самое важное)
+    HAL_I2C_Mem_Read(&hi2c1, ADV7513_ADDR, 0x42, I2C_MEMADD_SIZE_8BIT, &reg, 1, HAL_MAX_DELAY);
+    sprintf(buf, "0x42 Status    : 0x%02X  HPD=%d  RxSense=%d\n", 
+            reg, (reg>>6)&1, (reg>>5)&1);
+    HAL_UART_Transmit(&huart1, (uint8_t*)buf, strlen(buf), HAL_MAX_DELAY);
+
+    // 3. PLL Lock + Input Status
+    HAL_I2C_Mem_Read(&hi2c1, ADV7513_ADDR, 0x9E, I2C_MEMADD_SIZE_8BIT, &reg, 1, HAL_MAX_DELAY);
+    sprintf(buf, "0x9E PLL+Input : 0x%02X  PLL Locked=%d\n", reg, (reg>>4)&1);
+    HAL_UART_Transmit(&huart1, (uint8_t*)buf, strlen(buf), HAL_MAX_DELAY);
+
+    // 4. TMDS Status
+    HAL_I2C_Mem_Read(&hi2c1, ADV7513_ADDR, 0xA0, I2C_MEMADD_SIZE_8BIT, &reg, 1, HAL_MAX_DELAY);
+    sprintf(buf, "0xA0 TMDS Status: 0x%02X\n", reg);
+    HAL_UART_Transmit(&huart1, (uint8_t*)buf, strlen(buf), HAL_MAX_DELAY);
+
+    // 5. TMDS Power
+    HAL_I2C_Mem_Read(&hi2c1, ADV7513_ADDR, 0xA1, I2C_MEMADD_SIZE_8BIT, &reg, 1, HAL_MAX_DELAY);
+    sprintf(buf, "0xA1 TMDS Power : 0x%02X\n", reg);
+    HAL_UART_Transmit(&huart1, (uint8_t*)buf, strlen(buf), HAL_MAX_DELAY);
+
+    // 6. DDC Controller State (очень важно!)
+    HAL_I2C_Mem_Read(&hi2c1, ADV7513_ADDR, 0xC8, I2C_MEMADD_SIZE_8BIT, &reg, 1, HAL_MAX_DELAY);
+    uint8_t ddc = reg & 0x0F;
+    const char* states[] = {
+        "In Reset (No HPD)",
+        "Reading EDID",
+        "IDLE (EDID Ready)",
+        "Initializing HDCP",
+        "HDCP Enabled",
+        "Initializing HDCP Repeater"
+    };
+    sprintf(buf, "0xC8 DDC State : 0x%02X  (%s)\n", reg, (ddc <= 5) ? states[ddc] : "Unknown");
+    HAL_UART_Transmit(&huart1, (uint8_t*)buf, strlen(buf), HAL_MAX_DELAY);
+
+    // 7. Detected VIC (очень важно!)
+    HAL_I2C_Mem_Read(&hi2c1, ADV7513_ADDR, 0x3E, I2C_MEMADD_SIZE_8BIT, &reg, 1, HAL_MAX_DELAY);
+    sprintf(buf, "0x3E Detected VIC: 0x%02X  (VIC = %d)\n", reg, (reg >> 2) & 0x3F);
+    HAL_UART_Transmit(&huart1, (uint8_t*)buf, strlen(buf), HAL_MAX_DELAY);
+
+    HAL_UART_Transmit(&huart1, (uint8_t*)"================================\n\n", 33, HAL_MAX_DELAY);
+}
+
+
 void ADV7513_PowerInit(void)
 {
-    typedef struct {
-        uint8_t addr;
-        uint8_t val;
-        const char *name;
-    } reg_adv7513_t;
+    // 1. Power Up
+    ADV7513_WriteVerifyReg(0x41, 0x10, "POWER_UP");
+    HAL_Delay(200);
 
-    // 1. СНАЧАЛА ОБЯЗАТЕЛЬНО POWER-UP
-    reg_adv7513_t power_regs[] = {
-        {POWER_UP_ADDR, POWER_UP_VAL, "POWER_UP"}
-    };
-    for (int i = 0; i < sizeof(power_regs)/sizeof(power_regs[0]); i++) {
-        ADV7513_WriteVerifyReg(power_regs[i].addr, power_regs[i].val, power_regs[i].name);
+    // 2. Fixed PLL registers + High Frequency mode
+    ADV7513_WriteVerifyReg(0x98, 0x03, "PLL0");
+    ADV7513_WriteVerifyReg(0x9A, 0xE0, "PLL1");
+    ADV7513_WriteVerifyReg(0x9C, 0x30, "PLL2");
+    ADV7513_WriteVerifyReg(0x9D, 0x61, "PLL3_HighFreq");   // важно для 40 МГц
+    ADV7513_WriteVerifyReg(0xA2, 0xA4, "PLL4");
+    ADV7513_WriteVerifyReg(0xA3, 0xA4, "PLL5");
+    ADV7513_WriteVerifyReg(0xE0, 0xD0, "PLL6");
+    ADV7513_WriteVerifyReg(0xF9, 0x00, "PLL7");
+
+    
+
+
+    // ADV7513_WriteVerifyReg(0x15, 0x05, "RGB888-DDR-ON");
+    // ADV7513_WriteVerifyReg(0xD0, 0x3C, "NO SYNC PULSE");
+    uint8_t reg = 0;
+
+
+    HAL_I2C_Mem_Read(&hi2c1, ADV7513_ADDR, 0x9E, I2C_MEMADD_SIZE_8BIT, &reg, 1, HAL_MAX_DELAY);
+    if(!((reg>>4)&1)){
+      Error_Handler();
     }
-
-    // 2. Теперь PLL + PR
-    reg_adv7513_t regs[] = {
-        {PLL_0_ADDR, PLL_0_VAL, "PLL0"},
-        {PLL_1_ADDR, PLL_1_VAL, "PLL_1"},
-        {PLL_2_ADDR, PLL_2_VAL, "PLL_2"},
-        {PLL_3_ADDR, PLL_3_VAL, "PLL_3"},
-        {PLL_4_ADDR, PLL_4_VAL, "PLL_4"},
-        {PLL_5_ADDR, PLL_5_VAL, "PLL_5"},
-        {PLL_6_ADDR, PLL_6_VAL, "PLL_6"},
-        {PLL_7_ADDR, PLL_7_VAL, "PLL_7"},
-        {0x3B, 0x54, "PR_MANUAL_X4"}          // ← правильно для ×4
-    };
-
-    for (int i = 0; i < sizeof(regs)/sizeof(regs[0]); i++) {
-        ADV7513_WriteVerifyReg(regs[i].addr, regs[i].val, regs[i].name);
-    }
-
-    HAL_UART_Transmit(&huart1, (uint8_t*)"Power + PLL + PR x4 OK\n", 24, HAL_MAX_DELAY);
-
-    // LED blink
-    HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_8); HAL_Delay(100);
-    HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_8); HAL_Delay(100);
     HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_8);
 }
 
-// void ADV7513_HDMI_Init(void)
-// {
-//     typedef struct {
-//         uint8_t addr;
-//         uint8_t val;
-//         const char* name;
-//     } reg_t;
-
-//     reg_t regs[] = {
-//         {0x3C, 0x00, "Video Identification Code"},
-//         {VIDEO_INPUT_ADDR,   VIDEO_INPUT_VAL,   "VIDEO_INPUT"}, //rgb 24 bit
-//         {OUTPUT_FORMAT_ADDR, OUTPUT_FORMAT_VAL, "OUTPUT_FORMAT"},
-//         {POLARITY_ADDR,      POLARITY_VAL,      "POLARITY"},
-//         {POWER_UP_ADDR,      POWER_UP_VAL,      "POWER_UP"},
-//         {MODE_ADDR,          MODE_HDMI_ENABLE,  "MODE"},          // HDMI mode
-//         {TMDS_OUTPUT_ADDR,   TMDS_OUTPUT_ENABLE,"TMDS_OUTPUT"},   // включает TMDS
-//         {AVI_INFOFRAME_ADDR, AVI_INFOFRAME_VAL, "AVI_INFOFRAME"},
-//         {AVI_ASPECT_ADDR, AVI_ASPECT_VAL, "AVI_ASPECT"},
-//         {AUTO_CKSUM_ADDR, AUTO_CKSUM_VAL, "AUTO_CKSUM"},
-//         {0x18, 0x00, "CSC_DISABLE"},
-//         {0xA1, 0x00, "TMDS_POWER_ON"},
-//     };
-
-//     for(int i = 0; i < sizeof(regs)/sizeof(regs[0]); i++) {
-//         ADV7513_WriteVerifyReg(regs[i].addr, regs[i].val, regs[i].name);
-//     }
-
-//     HAL_UART_Transmit(&huart1, (uint8_t*)"HDMI Init Complete\n", 20, HAL_MAX_DELAY);
-//     HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_8);
-//     HAL_Delay(100);
-//     HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_8);
-//     HAL_Delay(100);
-//     HAL_GPIO_TogglePin(GPIOA,GPIO_PIN_8);
-//     HAL_Delay(100);
-//     HAL_GPIO_TogglePin(GPIOA,GPIO_PIN_8);
-// }
 
 void ADV7513_HDMI_Init(void)
 {
-    typedef struct {
-        uint8_t addr;
-        uint8_t val;
-        const char* name;
-    } reg_t;
 
-    reg_t regs[] = {
-        {0x15, 0x00, "VIDEO_INPUT"},          // RGB 4:4:4 24-bit
-        {0x16, 0x30, "OUTPUT_FORMAT"},
-        {0x17, 0x00, "POLARITY"},
-        // {0x18, 0x00, "CSC_DISABLE"},          // ОБЯЗАТЕЛЬНО
-        {0x3C, 0x00, "VIC (custom)"},
-        {0xAF, 0x02, "HDMI_MODE"},
-        {0x40, 0x80, "GC_PACKET_EN"},
-        {0x55, 0x10, "AVI_INFOFRAME"},
-        {0x56, 0x20, "AVI_ASPECT"},           // можно оставить 0x20 (или 0x28 — оба работают)
-        {0x4A, 0x80, "AUTO_CKSUM"},
-        {0xA1, 0x00, "TMDS_POWER_ON"}         // TMDS clock + data ON
-    };
+    
+    // // // ========== 3. Рекомендованные ADI регистры ==========
+    ADV7513_WriteVerifyReg(0x99, 0x02, "ADI_RECOMMENDED");
+    ADV7513_WriteVerifyReg(0xA5, 0x44, "ADI_RECOMMENDED");
+    ADV7513_WriteVerifyReg(0xAB, 0x40, "ADI_RECOMMENDED");
+    ADV7513_WriteVerifyReg(0xD1, 0xFF, "ADI_RECOMMENDED");
+    ADV7513_WriteVerifyReg(0xFA, 0x7D, "ADI_RECOMMENDED");
+    ADV7513_WriteVerifyReg(0x49, 0xA8, "must be set to default");
+    ADV7513_WriteVerifyReg(0x4C, 0x00, "must be set to default");
+    ADV7513_WriteVerifyReg(0x4B, 0x80, "Clear_AVMute");   // обязательно
+    ADV7513_WriteVerifyReg(0xDE, 0x10, "TMDS_CLK_DRIVER_ON"); //default
+    
+    // // // ========== 4. Настройка видеоформата ==========
+    ADV7513_WriteVerifyReg(0x15, 0x00, "RGB888_4:4:4");
+    ADV7513_WriteVerifyReg(0x16, 0x60, "Output_Format_444_8bit");
+    ADV7513_WriteVerifyReg(0x18, 0x46, "CSC_Disabled");    // исправлено
+    // //точно верно
+    // // // ========== 5. Полярности (зависит от вашего LTDC) ==========
+    ADV7513_WriteVerifyReg(0x17, 0x60, "HS VS AL 4:3"); 
+    // // // ========== 6. Включение TMDS выхода ==========
+    ADV7513_WriteVerifyReg(0x40, 0x80, "TMDS_ENABLE");  // GC packet enabled   
+    // // // ========== 7. Режим HDMI и AVI InfoFrame ==========
 
-    for (int i = 0; i < sizeof(regs)/sizeof(regs[0]); i++) {
-        ADV7513_WriteVerifyReg(regs[i].addr, regs[i].val, regs[i].name);
+      ADV7513_WriteVerifyReg(0xAF, 0x02, "HDMI ON");
+      ADV7513_WriteVerifyReg(0x44, 0x10," AVI PACKET ENABLE");
+      ADV7513_WriteVerifyReg(0x55, 0x00, "AVI");
+
+
+    // // ========== 8. Задержка такта (опционально) ==========
+    // ADV7513_WriteVerifyReg(0xBA, 0x60, "CLOCK_DELAY_0ns");
+    // ========== 9. Управление тактовым драйвером TMDS ==========
+    // Регистр 0xDE, бит 3 = 0 для включения clock driver
+
+
+    
+
+}
+
+
+HAL_StatusTypeDef ADV7513_ReadEDIDSegment(I2C_HandleTypeDef *hi2c_dev, uint8_t segment, uint8_t *edid_buffer, uint32_t timeout_ms)
+{
+    uint8_t reg_data = 0;
+    uint32_t tickstart = HAL_GetTick();
+
+    // --- 1. Сброс флага готовности EDID ---
+    // Читаем регистр 0x96, чтобы убедиться, что флаг готовности сброшен.
+    if (HAL_I2C_Mem_Read(hi2c_dev, ADV7513_MAIN_ADDR, REG_EDID_RDY_FLAG, I2C_MEMADD_SIZE_8BIT, &reg_data, 1, HAL_MAX_DELAY) != HAL_OK) {
+        return HAL_ERROR;
     }
 
-    HAL_UART_Transmit(&huart1, (uint8_t*)"HDMI Init + TMDS ON Complete\n", 30, HAL_MAX_DELAY);
+    // --- 2. Запрос нового сегмента EDID ---
+    // Записываем номер нужного сегмента в регистр 0xC4.
+    // Это действие инициирует процесс чтения EDID мастером ADV7513.
+    reg_data = segment;
+    if (HAL_I2C_Mem_Write(hi2c_dev, ADV7513_MAIN_ADDR, REG_EDID_SEGMENT, I2C_MEMADD_SIZE_8BIT, &reg_data, 1, HAL_MAX_DELAY) != HAL_OK) {
+        return HAL_ERROR;
+    }
 
-    // LED blink
-    HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_8); HAL_Delay(100);
-    HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_8); HAL_Delay(100);
-    HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_8); HAL_Delay(100);
-    HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_8);
+    // --- 3. Ожидание готовности данных (опрос флага EDID_RDY)---
+    // Циклически проверяем бит 2 (EDID_RDY) в регистре 0x96.
+    while ((HAL_GetTick() - tickstart) < timeout_ms) {
+        if (HAL_I2C_Mem_Read(hi2c_dev, ADV7513_MAIN_ADDR, REG_EDID_RDY_FLAG, I2C_MEMADD_SIZE_8BIT, &reg_data, 1, HAL_MAX_DELAY) != HAL_OK) {
+            return HAL_ERROR;
+        }
+        // Если флаг установлен, данные готовы
+        if (reg_data & (1 << 2)) {
+            break;
+        }
+    }
+
+    // Проверка, не истекло ли время ожидания
+    if ((HAL_GetTick() - tickstart) >= timeout_ms) {
+        Error_Handler();
+    }
+
+    // --- 4. Чтение данных из EDID-памяти ADV7513 ---
+    // Данные успешно загружены чипом. Теперь читаем их по адресу 0x7E.
+    if (HAL_I2C_Mem_Read(hi2c_dev, ADV7513_EDID_MEM_ADDR, 0x00, I2C_MEMADD_SIZE_8BIT, edid_buffer, EDID_BLOCK_SIZE, HAL_MAX_DELAY) != HAL_OK) {
+        Error_Handler();
+    }
+
+
+    return HAL_OK;
 }
 
 
@@ -518,222 +598,8 @@ void ADV7513_WriteVerifyReg(uint8_t reg_addr, uint8_t reg_value, const char* reg
         HAL_UART_Transmit(&huart1, (uint8_t*)" => OK\n", 7, HAL_MAX_DELAY);
     }
 }
-// void ADV7513_PowerInit(void)
-// {
-//     HAL_StatusTypeDef status = HAL_OK;
-//     uint8_t write_val = 0;
-//     uint8_t read_val = 0;
-    
-//     // ========== 1. PLL_0 (0x98) = 0x03 ==========
-//     write_val = PLL_0_VAL;  // 0x03
-//     status = HAL_I2C_Mem_Write(&hi2c1, ADV7513_ADDR, PLL_0_ADDR, 
-//                                 I2C_MEMADD_SIZE_8BIT, &write_val, 1, HAL_MAX_DELAY);
-//     if(status != HAL_OK) { HAL_UART_Transmit(&huart1, (uint8_t*)"PLL_0 Write ERROR\n", 19, HAL_MAX_DELAY); Error_Handler(); }
-    
-//     status = HAL_I2C_Mem_Read(&hi2c1, ADV7513_ADDR, PLL_0_ADDR, 
-//                                I2C_MEMADD_SIZE_8BIT, &read_val, 1, HAL_MAX_DELAY);
-//     if(status != HAL_OK) { HAL_UART_Transmit(&huart1, (uint8_t*)"PLL_0 Read ERROR\n", 18, HAL_MAX_DELAY); Error_Handler(); }
-    
-//     if(read_val != PLL_0_VAL) { HAL_UART_Transmit(&huart1, (uint8_t*)"PLL_0 Verify FAIL\n", 19, HAL_MAX_DELAY); Error_Handler(); }
-//     else { HAL_UART_Transmit(&huart1, (uint8_t*)"PLL_0 => OK\n", 13, HAL_MAX_DELAY); }
-    
-//     // ========== 2. PLL_1 (0x9A) = 0xE0 ==========
-//     write_val = PLL_1_VAL;  // 0xE0
-//     status = HAL_I2C_Mem_Write(&hi2c1, ADV7513_ADDR, PLL_1_ADDR, 
-//                                 I2C_MEMADD_SIZE_8BIT, &write_val, 1, HAL_MAX_DELAY);
-//     if(status != HAL_OK) { HAL_UART_Transmit(&huart1, (uint8_t*)"PLL_1 Write ERROR\n", 19, HAL_MAX_DELAY); Error_Handler(); }
-    
-//     status = HAL_I2C_Mem_Read(&hi2c1, ADV7513_ADDR, PLL_1_ADDR, 
-//                                I2C_MEMADD_SIZE_8BIT, &read_val, 1, HAL_MAX_DELAY);
-//     if(status != HAL_OK) { HAL_UART_Transmit(&huart1, (uint8_t*)"PLL_1 Read ERROR\n", 18, HAL_MAX_DELAY); Error_Handler(); }
-    
-//     if(read_val != PLL_1_VAL) { HAL_UART_Transmit(&huart1, (uint8_t*)"PLL_1 Verify FAIL\n", 19, HAL_MAX_DELAY); Error_Handler(); }
-//     else { HAL_UART_Transmit(&huart1, (uint8_t*)"PLL_1 => OK\n", 13, HAL_MAX_DELAY); }
-    
-//     // ========== 3. PLL_2 (0x9C) = 0x30 ==========
-//     write_val = PLL_2_VAL;  // 0x30
-//     status = HAL_I2C_Mem_Write(&hi2c1, ADV7513_ADDR, PLL_2_ADDR, 
-//                                 I2C_MEMADD_SIZE_8BIT, &write_val, 1, HAL_MAX_DELAY);
-//     if(status != HAL_OK) { HAL_UART_Transmit(&huart1, (uint8_t*)"PLL_2 Write ERROR\n", 19, HAL_MAX_DELAY); Error_Handler(); }
-    
-//     status = HAL_I2C_Mem_Read(&hi2c1, ADV7513_ADDR, PLL_2_ADDR, 
-//                                I2C_MEMADD_SIZE_8BIT, &read_val, 1, HAL_MAX_DELAY);
-//     if(status != HAL_OK) { HAL_UART_Transmit(&huart1, (uint8_t*)"PLL_2 Read ERROR\n", 18, HAL_MAX_DELAY); Error_Handler(); }
-    
-//     if(read_val != PLL_2_VAL) { HAL_UART_Transmit(&huart1, (uint8_t*)"PLL_2 Verify FAIL\n", 19, HAL_MAX_DELAY); Error_Handler(); }
-//     else { HAL_UART_Transmit(&huart1, (uint8_t*)"PLL_2 => OK\n", 13, HAL_MAX_DELAY); }
-    
-//     // ========== 4. PLL_3 (0x9D) = 0x01 ==========
-//     write_val = PLL_3_VAL;  // 0x01
-//     status = HAL_I2C_Mem_Write(&hi2c1, ADV7513_ADDR, PLL_3_ADDR, 
-//                                 I2C_MEMADD_SIZE_8BIT, &write_val, 1, HAL_MAX_DELAY);
-//     if(status != HAL_OK) { HAL_UART_Transmit(&huart1, (uint8_t*)"PLL_3 Write ERROR\n", 19, HAL_MAX_DELAY); Error_Handler(); }
-    
-//     status = HAL_I2C_Mem_Read(&hi2c1, ADV7513_ADDR, PLL_3_ADDR, 
-//                                I2C_MEMADD_SIZE_8BIT, &read_val, 1, HAL_MAX_DELAY);
-//     if(status != HAL_OK) { HAL_UART_Transmit(&huart1, (uint8_t*)"PLL_3 Read ERROR\n", 18, HAL_MAX_DELAY); Error_Handler(); }
-    
-//     if(read_val != PLL_3_VAL) { HAL_UART_Transmit(&huart1, (uint8_t*)"PLL_3 Verify FAIL\n", 19, HAL_MAX_DELAY); Error_Handler(); }
-//     else { HAL_UART_Transmit(&huart1, (uint8_t*)"PLL_3 => OK\n", 13, HAL_MAX_DELAY); }
-    
-//     // ========== 5. PLL_4 (0xA2) = 0xA4 ==========
-//     write_val = PLL_4_VAL;  // 0xA4
-//     status = HAL_I2C_Mem_Write(&hi2c1, ADV7513_ADDR, PLL_4_ADDR, 
-//                                 I2C_MEMADD_SIZE_8BIT, &write_val, 1, HAL_MAX_DELAY);
-//     if(status != HAL_OK) { HAL_UART_Transmit(&huart1, (uint8_t*)"PLL_4 Write ERROR\n", 19, HAL_MAX_DELAY); Error_Handler(); }
-    
-//     status = HAL_I2C_Mem_Read(&hi2c1, ADV7513_ADDR, PLL_4_ADDR, 
-//                                I2C_MEMADD_SIZE_8BIT, &read_val, 1, HAL_MAX_DELAY);
-//     if(status != HAL_OK) { HAL_UART_Transmit(&huart1, (uint8_t*)"PLL_4 Read ERROR\n", 18, HAL_MAX_DELAY); Error_Handler(); }
-    
-//     if(read_val != PLL_4_VAL) { HAL_UART_Transmit(&huart1, (uint8_t*)"PLL_4 Verify FAIL\n", 19, HAL_MAX_DELAY); Error_Handler(); }
-//     else { HAL_UART_Transmit(&huart1, (uint8_t*)"PLL_4 => OK\n", 13, HAL_MAX_DELAY); }
-    
-//     // ========== 6. PLL_5 (0xA3) = 0xA4 ==========
-//     write_val = PLL_5_VAL;  // 0xA4
-//     status = HAL_I2C_Mem_Write(&hi2c1, ADV7513_ADDR, PLL_5_ADDR, 
-//                                 I2C_MEMADD_SIZE_8BIT, &write_val, 1, HAL_MAX_DELAY);
-//     if(status != HAL_OK) { HAL_UART_Transmit(&huart1, (uint8_t*)"PLL_5 Write ERROR\n", 19, HAL_MAX_DELAY); Error_Handler(); }
-    
-//     status = HAL_I2C_Mem_Read(&hi2c1, ADV7513_ADDR, PLL_5_ADDR, 
-//                                I2C_MEMADD_SIZE_8BIT, &read_val, 1, HAL_MAX_DELAY);
-//     if(status != HAL_OK) { HAL_UART_Transmit(&huart1, (uint8_t*)"PLL_5 Read ERROR\n", 18, HAL_MAX_DELAY); Error_Handler(); }
-    
-//     if(read_val != PLL_5_VAL) { HAL_UART_Transmit(&huart1, (uint8_t*)"PLL_5 Verify FAIL\n", 19, HAL_MAX_DELAY); Error_Handler(); }
-//     else { HAL_UART_Transmit(&huart1, (uint8_t*)"PLL_5 => OK\n", 13, HAL_MAX_DELAY); }
-    
-//     // ========== 7. PLL_6 (0xE0) = 0xD0 ==========
-//     write_val = PLL_6_VAL;  // 0xD0
-//     status = HAL_I2C_Mem_Write(&hi2c1, ADV7513_ADDR, PLL_6_ADDR, 
-//                                 I2C_MEMADD_SIZE_8BIT, &write_val, 1, HAL_MAX_DELAY);
-//     if(status != HAL_OK) { HAL_UART_Transmit(&huart1, (uint8_t*)"PLL_6 Write ERROR\n", 19, HAL_MAX_DELAY); Error_Handler(); }
-    
-//     status = HAL_I2C_Mem_Read(&hi2c1, ADV7513_ADDR, PLL_6_ADDR, 
-//                                I2C_MEMADD_SIZE_8BIT, &read_val, 1, HAL_MAX_DELAY);
-//     if(status != HAL_OK) { HAL_UART_Transmit(&huart1, (uint8_t*)"PLL_6 Read ERROR\n", 18, HAL_MAX_DELAY); Error_Handler(); }
-    
-//     if(read_val != PLL_6_VAL) { HAL_UART_Transmit(&huart1, (uint8_t*)"PLL_6 Verify FAIL\n", 19, HAL_MAX_DELAY); Error_Handler(); }
-//     else { HAL_UART_Transmit(&huart1, (uint8_t*)"PLL_6 => OK\n", 13, HAL_MAX_DELAY); }
-    
-//     // ========== 8. PLL_7 (0xF9) = 0x00 ==========
-//     // write_val = PLL_7_VAL;  // 0x00
-//     // status = HAL_I2C_Mem_Write(&hi2c1, ADV7513_ADDR, PLL_7_ADDR, 
-//     //                             I2C_MEMADD_SIZE_8BIT, &write_val, 1, HAL_MAX_DELAY);
-//     // if(status != HAL_OK) { HAL_UART_Transmit(&huart1, (uint8_t*)"PLL_7 Write ERROR\n", 19, HAL_MAX_DELAY); Error_Handler(); }
-    
-//     // status = HAL_I2C_Mem_Read(&hi2c1, ADV7513_ADDR, PLL_7_ADDR, 
-//     //                            I2C_MEMADD_SIZE_8BIT, &read_val, 1, HAL_MAX_DELAY);
-//     // if(status != HAL_OK) { HAL_UART_Transmit(&huart1, (uint8_t*)"PLL_7 Read ERROR\n", 18, HAL_MAX_DELAY); Error_Handler(); }
-    
-//     // if(read_val != PLL_7_VAL) { HAL_UART_Transmit(&huart1, (uint8_t*)"PLL_7 Verify FAIL\n", 19, HAL_MAX_DELAY); Error_Handler(); }
-//     // else { HAL_UART_Transmit(&huart1, (uint8_t*)"PLL_7 => OK\n", 13, HAL_MAX_DELAY); }
-    
-//     HAL_UART_Transmit(&huart1, (uint8_t*)"All PLL Registers OK\n", 22, HAL_MAX_DELAY);
-// }
 
-// void ADV7513_HDMI_Init(void)
-// {
-//     HAL_StatusTypeDef status = HAL_OK;
-//     uint8_t write_val = 0;
-//     uint8_t read_val = 0;
 
-//     // ========== 1. VIDEO_INPUT (0x15) = 0x00 (RGB 4:4:4) ==========
-//     write_val = VIDEO_INPUT_VAL;  // 0x00
-//     status = HAL_I2C_Mem_Write(&hi2c1, ADV7513_ADDR, VIDEO_INPUT_ADDR,
-//                                 I2C_MEMADD_SIZE_8BIT, &write_val, 1, HAL_MAX_DELAY);
-//     if(status != HAL_OK) { HAL_UART_Transmit(&huart1, (uint8_t*)"VIDEO_INPUT Write ERROR\n", 25, HAL_MAX_DELAY); Error_Handler(); }
-
-//     status = HAL_I2C_Mem_Read(&hi2c1, ADV7513_ADDR, VIDEO_INPUT_ADDR,
-//                                I2C_MEMADD_SIZE_8BIT, &read_val, 1, HAL_MAX_DELAY);
-//     if(status != HAL_OK) { HAL_UART_Transmit(&huart1, (uint8_t*)"VIDEO_INPUT Read ERROR\n", 24, HAL_MAX_DELAY); Error_Handler(); }
-
-//     if(read_val != VIDEO_INPUT_VAL) { HAL_UART_Transmit(&huart1, (uint8_t*)"VIDEO_INPUT Verify FAIL\n", 25, HAL_MAX_DELAY); Error_Handler(); }
-//     else { HAL_UART_Transmit(&huart1, (uint8_t*)"VIDEO_INPUT => OK\n", 19, HAL_MAX_DELAY); }
-
-//     // ========== 2. OUTPUT_FORMAT (0x16) = 0x30 (RGB888) ==========
-//     write_val = OUTPUT_FORMAT_VAL;  // 0x30
-//     status = HAL_I2C_Mem_Write(&hi2c1, ADV7513_ADDR, OUTPUT_FORMAT_ADDR,
-//                                 I2C_MEMADD_SIZE_8BIT, &write_val, 1, HAL_MAX_DELAY);
-//     if(status != HAL_OK) { HAL_UART_Transmit(&huart1, (uint8_t*)"OUTPUT_FORMAT Write ERROR\n", 27, HAL_MAX_DELAY); Error_Handler(); }
-
-//     status = HAL_I2C_Mem_Read(&hi2c1, ADV7513_ADDR, OUTPUT_FORMAT_ADDR,
-//                                I2C_MEMADD_SIZE_8BIT, &read_val, 1, HAL_MAX_DELAY);
-//     if(status != HAL_OK) { HAL_UART_Transmit(&huart1, (uint8_t*)"OUTPUT_FORMAT Read ERROR\n", 26, HAL_MAX_DELAY); Error_Handler(); }
-
-//     if(read_val != OUTPUT_FORMAT_VAL) { HAL_UART_Transmit(&huart1, (uint8_t*)"OUTPUT_FORMAT Verify FAIL\n", 27, HAL_MAX_DELAY); Error_Handler(); }
-//     else { HAL_UART_Transmit(&huart1, (uint8_t*)"OUTPUT_FORMAT => OK\n", 21, HAL_MAX_DELAY); }
-
-//     // ========== 3. POLARITY (0x17) = 0x00 ==========
-//     write_val = POLARITY_VAL;  // 0x00
-//     status = HAL_I2C_Mem_Write(&hi2c1, ADV7513_ADDR, POLARITY_ADDR,
-//                                 I2C_MEMADD_SIZE_8BIT, &write_val, 1, HAL_MAX_DELAY);
-//     if(status != HAL_OK) { HAL_UART_Transmit(&huart1, (uint8_t*)"POLARITY Write ERROR\n", 22, HAL_MAX_DELAY); Error_Handler(); }
-
-//     status = HAL_I2C_Mem_Read(&hi2c1, ADV7513_ADDR, POLARITY_ADDR,
-//                                I2C_MEMADD_SIZE_8BIT, &read_val, 1, HAL_MAX_DELAY);
-//     if(status != HAL_OK) { HAL_UART_Transmit(&huart1, (uint8_t*)"POLARITY Read ERROR\n", 21, HAL_MAX_DELAY); Error_Handler(); }
-
-//     if(read_val != POLARITY_VAL) { HAL_UART_Transmit(&huart1, (uint8_t*)"POLARITY Verify FAIL\n", 22, HAL_MAX_DELAY); Error_Handler(); }
-//     else { HAL_UART_Transmit(&huart1, (uint8_t*)"POLARITY => OK\n", 16, HAL_MAX_DELAY); }
-
-//     // ========== 4. POWER_UP (0x41) = 0x10 ==========
-//     write_val = POWER_UP_VAL;  // 0x10
-//     status = HAL_I2C_Mem_Write(&hi2c1, ADV7513_ADDR, POWER_UP_ADDR,
-//                                 I2C_MEMADD_SIZE_8BIT, &write_val, 1, HAL_MAX_DELAY);
-//     if(status != HAL_OK) { HAL_UART_Transmit(&huart1, (uint8_t*)"POWER_UP Write ERROR\n", 22, HAL_MAX_DELAY); Error_Handler(); }
-
-//     status = HAL_I2C_Mem_Read(&hi2c1, ADV7513_ADDR, POWER_UP_ADDR,
-//                                I2C_MEMADD_SIZE_8BIT, &read_val, 1, HAL_MAX_DELAY);
-//     if(status != HAL_OK) { HAL_UART_Transmit(&huart1, (uint8_t*)"POWER_UP Read ERROR\n", 21, HAL_MAX_DELAY); Error_Handler(); }
-
-//     if(read_val != POWER_UP_VAL) { HAL_UART_Transmit(&huart1, (uint8_t*)"POWER_UP Verify FAIL\n", 22, HAL_MAX_DELAY); Error_Handler(); }
-//     else { HAL_UART_Transmit(&huart1, (uint8_t*)"POWER_UP => OK\n", 16, HAL_MAX_DELAY); }
-
-//     // ========== 5. MODE (0xAF) = HDMI enable (0x02) ==========
-//     // Если нужно DVI, замените на MODE_DVI_ENABLE (0x00)
-//     write_val = MODE_HDMI_ENABLE;  // 0x02
-//     status = HAL_I2C_Mem_Write(&hi2c1, ADV7513_ADDR, MODE_ADDR,
-//                                 I2C_MEMADD_SIZE_8BIT, &write_val, 1, HAL_MAX_DELAY);
-//     if(status != HAL_OK) { HAL_UART_Transmit(&huart1, (uint8_t*)"MODE Write ERROR\n", 18, HAL_MAX_DELAY); Error_Handler(); }
-
-//     status = HAL_I2C_Mem_Read(&hi2c1, ADV7513_ADDR, MODE_ADDR,
-//                                I2C_MEMADD_SIZE_8BIT, &read_val, 1, HAL_MAX_DELAY);
-//     if(status != HAL_OK) { HAL_UART_Transmit(&huart1, (uint8_t*)"MODE Read ERROR\n", 17, HAL_MAX_DELAY); Error_Handler(); }
-
-//     if(read_val != MODE_HDMI_ENABLE) { HAL_UART_Transmit(&huart1, (uint8_t*)"MODE Verify FAIL\n", 18, HAL_MAX_DELAY); Error_Handler(); }
-//     else { HAL_UART_Transmit(&huart1, (uint8_t*)"MODE => OK\n", 12, HAL_MAX_DELAY); }
-
-//     // ========== 6. TMDS OUTPUT + GC PACKET (0x40) = 0x80 ==========
-//     // Бит 7 включает TMDS выход и передачу General Control Packets
-//     write_val = TMDS_OUTPUT_ENABLE;  // 0x80
-//     status = HAL_I2C_Mem_Write(&hi2c1, ADV7513_ADDR, TMDS_OUTPUT_ADDR,
-//                                 I2C_MEMADD_SIZE_8BIT, &write_val, 1, HAL_MAX_DELAY);
-//     if(status != HAL_OK) { HAL_UART_Transmit(&huart1, (uint8_t*)"TMDS_OUTPUT Write ERROR\n", 25, HAL_MAX_DELAY); Error_Handler(); }
-
-//     status = HAL_I2C_Mem_Read(&hi2c1, ADV7513_ADDR, TMDS_OUTPUT_ADDR,
-//                                I2C_MEMADD_SIZE_8BIT, &read_val, 1, HAL_MAX_DELAY);
-//     if(status != HAL_OK) { HAL_UART_Transmit(&huart1, (uint8_t*)"TMDS_OUTPUT Read ERROR\n", 24, HAL_MAX_DELAY); Error_Handler(); }
-
-//     if(read_val != TMDS_OUTPUT_ENABLE) { HAL_UART_Transmit(&huart1, (uint8_t*)"TMDS_OUTPUT Verify FAIL\n", 25, HAL_MAX_DELAY); Error_Handler(); }
-//     else { HAL_UART_Transmit(&huart1, (uint8_t*)"TMDS_OUTPUT => OK\n", 19, HAL_MAX_DELAY); }
-
-//     // ========== 7. AVI InfoFrame (0x55) = 0x10 (RGB 4:4:4) ==========
-//     // Это первый байт AVI InfoFrame (Version). В зависимости от разрешения могут потребоваться дополнительные байты.
-//     write_val = AVI_INFOFRAME_VAL;  // 0x10
-//     status = HAL_I2C_Mem_Write(&hi2c1, ADV7513_ADDR, AVI_INFOFRAME_ADDR,
-//                                 I2C_MEMADD_SIZE_8BIT, &write_val, 1, HAL_MAX_DELAY);
-//     if(status != HAL_OK) { HAL_UART_Transmit(&huart1, (uint8_t*)"AVI_INFOFRAME Write ERROR\n", 27, HAL_MAX_DELAY); Error_Handler(); }
-
-//     status = HAL_I2C_Mem_Read(&hi2c1, ADV7513_ADDR, AVI_INFOFRAME_ADDR,
-//                                I2C_MEMADD_SIZE_8BIT, &read_val, 1, HAL_MAX_DELAY);
-//     if(status != HAL_OK) { HAL_UART_Transmit(&huart1, (uint8_t*)"AVI_INFOFRAME Read ERROR\n", 26, HAL_MAX_DELAY); Error_Handler(); }
-
-//     if(read_val != AVI_INFOFRAME_VAL) { HAL_UART_Transmit(&huart1, (uint8_t*)"AVI_INFOFRAME Verify FAIL\n", 27, HAL_MAX_DELAY); Error_Handler(); }
-//     else { HAL_UART_Transmit(&huart1, (uint8_t*)"AVI_INFOFRAME => OK\n", 21, HAL_MAX_DELAY); }
-
-//     HAL_UART_Transmit(&huart1, (uint8_t*)"HDMI Init Complete\n", 20, HAL_MAX_DELAY);
-// }
-/* USER CODE END 4 */
 
 /**
   * @brief  This function is executed in case of error occurrence.
